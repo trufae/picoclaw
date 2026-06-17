@@ -23,6 +23,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 )
 
 // chatTypeSingle is Delta Chat's Chattype::Single — a 1:1 direct chat.
@@ -73,18 +74,23 @@ type dcChat struct {
 }
 
 // dcMessageData mirrors the fields of Delta Chat's MessageData (camelCase on the
-// wire) that PicoClaw sets when calling send_msg. Viewtype is intentionally
-// omitted: Delta Chat infers it from the file (image/gif/video/voice/file…), so
-// attachments render natively without us classifying them.
+// wire) that PicoClaw sets when calling send_msg. Viewtype is normally left empty
+// so Delta Chat infers it from the file (image/gif/video/file…); it is set only
+// for voice replies, which must be Viewtype::Voice to render as a voice bubble
+// rather than a generic audio attachment.
 type dcMessageData struct {
 	Text     string `json:"text,omitempty"`
 	File     string `json:"file,omitempty"`
 	Filename string `json:"filename,omitempty"`
+	Viewtype string `json:"viewtype,omitempty"`
 }
 
-// Ensure DeltaChatChannel satisfies the optional media-sending interface so the
-// Manager routes OutboundMediaMessage to it.
-var _ channels.MediaSender = (*DeltaChatChannel)(nil)
+// Ensure DeltaChatChannel satisfies the optional capability interfaces so the
+// Manager routes media to it and the gateway advertises voice support.
+var (
+	_ channels.MediaSender             = (*DeltaChatChannel)(nil)
+	_ channels.VoiceCapabilityProvider = (*DeltaChatChannel)(nil)
+)
 
 // DeltaChatChannel implements channels.Channel on top of deltachat-rpc-server.
 type DeltaChatChannel struct {
@@ -281,7 +287,7 @@ func (c *DeltaChatChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 
 	var messageIDs []string
 	for _, part := range msg.Parts {
-		localPath, err := store.Resolve(part.Ref)
+		localPath, meta, err := store.ResolveWithMeta(part.Ref)
 		if err != nil {
 			logger.ErrorCF("deltachat", "Failed to resolve media ref", map[string]any{
 				"ref":   part.Ref,
@@ -299,6 +305,7 @@ func (c *DeltaChatChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 			Text:     part.Caption,
 			File:     localPath,
 			Filename: part.Filename,
+			Viewtype: deltaChatViewtype(part, meta),
 		}
 		raw, err := c.rpc.call(ctx, "send_msg", c.accountID, chatID, data)
 		if err != nil {
@@ -317,6 +324,38 @@ func (c *DeltaChatChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 	}
 
 	return messageIDs, nil
+}
+
+// deltaChatViewtype returns the explicit Delta Chat view type for an outbound
+// media part, or "" to let Delta Chat infer it from the file. Only voice replies
+// are forced (to Viewtype::Voice) so they render as playable voice bubbles;
+// images, GIFs, and video keep Delta Chat's native auto-detection. A part is
+// treated as voice when it is audio and either came from the send_tts tool or
+// carries a "voice" filename hint (matching the convention other channels use).
+func deltaChatViewtype(part bus.MediaPart, meta media.MediaMeta) string {
+	isAudio := part.Type == "audio" ||
+		strings.HasPrefix(strings.ToLower(part.ContentType), "audio/") ||
+		strings.HasPrefix(strings.ToLower(meta.ContentType), "audio/")
+	if !isAudio {
+		return ""
+	}
+
+	name := strings.ToLower(part.Filename)
+	if name == "" {
+		name = strings.ToLower(meta.Filename)
+	}
+	if meta.Source == "tool:send_tts" || strings.Contains(name, "voice") {
+		return "Voice"
+	}
+	return ""
+}
+
+// VoiceCapabilities implements channels.VoiceCapabilityProvider. Delta Chat can
+// receive voice notes (which the agent's ASR transcribes) and deliver
+// synthesized speech as voice messages, so it advertises both ASR and TTS. The
+// gateway still gates actual availability on configured ASR/TTS providers.
+func (c *DeltaChatChannel) VoiceCapabilities() channels.VoiceCapabilities {
+	return channels.VoiceCapabilities{ASR: true, TTS: true}
 }
 
 // StartTyping implements channels.TypingCapable. Delta Chat has no typing

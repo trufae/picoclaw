@@ -89,6 +89,11 @@ Delta Chat with that invite, not by typing the bare email address.
 - Outbound attachments are supported: when the agent emits media, each file is
   sent as a Delta Chat message (with the caption as text). Delta Chat infers the
   view type from the file, so images, GIFs, and videos render natively.
+- Voice is supported in both directions when voice providers are configured:
+  incoming voice notes are transcribed by the agent's ASR and the transcript is
+  passed to the model; the agent can reply with synthesized speech, which is
+  delivered as a native Delta Chat voice message (`send_tts`). This requires an
+  ASR and/or TTS provider under `voice` — it is not Delta Chat-specific config.
 
 ## Troubleshooting
 

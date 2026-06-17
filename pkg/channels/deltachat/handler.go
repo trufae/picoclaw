@@ -14,6 +14,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // listen is the inbound message loop. It blocks on wait_next_msgs and feeds
@@ -136,9 +137,15 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 	}
 
 	// A file with no caption still warrants a turn; give the agent a minimal
-	// placeholder so the message survives the empty-content guard below.
+	// placeholder so the message survives the empty-content guard below. Audio
+	// gets a "[voice]" tag specifically, so the agent's transcription step can
+	// substitute the transcript in place rather than appending it.
 	if content == "" && len(mediaRefs) > 0 {
-		content = "[media]"
+		if utils.IsAudioFile(msg.FileName, msg.FileMime) {
+			content = "[voice]"
+		} else {
+			content = "[media]"
+		}
 	}
 
 	sender := bus.SenderInfo{

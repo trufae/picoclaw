@@ -403,3 +403,88 @@ func TestSendMediaNoStore(t *testing.T) {
 		t.Error("expected error when no media store is configured")
 	}
 }
+
+// TestSendMediaVoice verifies that a send_tts-sourced audio part is delivered
+// with viewtype "Voice" so Delta Chat renders it as a voice bubble.
+func TestSendMediaVoice(t *testing.T) {
+	ch := newTestChannel(t)
+
+	tmp := filepath.Join(t.TempDir(), "tts-123.ogg")
+	if err := os.WriteFile(tmp, []byte("OggSfake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+	ref, err := store.Store(tmp, media.MediaMeta{
+		Filename:    "tts-123.ogg",
+		ContentType: "audio/ogg",
+		Source:      "tool:send_tts",
+	}, "scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	captured := make(chan rpcRequest, 1)
+	rpc, cleanup := newMockRPC(t, func(req rpcRequest) string {
+		captured <- req
+		return `{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":7}`
+	})
+	defer cleanup()
+	ch.rpc = rpc
+	ch.accountID = 1
+	ch.SetRunning(true)
+
+	if _, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "5",
+		Parts:  []bus.MediaPart{{Type: "audio", Ref: ref, ContentType: "audio/ogg"}},
+	}); err != nil {
+		t.Fatalf("SendMedia: %v", err)
+	}
+
+	select {
+	case req := <-captured:
+		data, ok := req.Params[2].(map[string]any)
+		if !ok {
+			t.Fatalf("data param = %T, want object", req.Params[2])
+		}
+		if data["viewtype"] != "Voice" {
+			t.Errorf("viewtype = %v, want Voice", data["viewtype"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("mock server never received the request")
+	}
+}
+
+// TestDeltaChatViewtype pins the rule that only voice audio is forced to a view
+// type; everything else is left to Delta Chat's own detection.
+func TestDeltaChatViewtype(t *testing.T) {
+	tests := []struct {
+		name string
+		part bus.MediaPart
+		meta media.MediaMeta
+		want string
+	}{
+		{"tts audio", bus.MediaPart{Type: "audio"}, media.MediaMeta{Source: "tool:send_tts", ContentType: "audio/ogg"}, "Voice"},
+		{"voice filename", bus.MediaPart{Type: "audio", Filename: "my-voice.mp3"}, media.MediaMeta{}, "Voice"},
+		{"plain audio", bus.MediaPart{Type: "audio", Filename: "song.mp3"}, media.MediaMeta{ContentType: "audio/mpeg"}, ""},
+		{"image", bus.MediaPart{Type: "image", Filename: "photo.png"}, media.MediaMeta{ContentType: "image/png"}, ""},
+		{"file", bus.MediaPart{Type: "file", Filename: "doc.pdf"}, media.MediaMeta{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deltaChatViewtype(tt.part, tt.meta); got != tt.want {
+				t.Errorf("deltaChatViewtype() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestVoiceCapabilities checks that Delta Chat advertises ASR and TTS so the
+// gateway's startup capability log is accurate.
+func TestVoiceCapabilities(t *testing.T) {
+	ch := newTestChannel(t)
+	caps := ch.VoiceCapabilities()
+	if !caps.ASR || !caps.TTS {
+		t.Errorf("VoiceCapabilities() = %+v, want both ASR and TTS true", caps)
+	}
+}
