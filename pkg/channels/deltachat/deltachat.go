@@ -72,6 +72,20 @@ type dcChat struct {
 	IsDeviceChat bool   `json:"isDeviceChat"`
 }
 
+// dcMessageData mirrors the fields of Delta Chat's MessageData (camelCase on the
+// wire) that PicoClaw sets when calling send_msg. Viewtype is intentionally
+// omitted: Delta Chat infers it from the file (image/gif/video/voice/file…), so
+// attachments render natively without us classifying them.
+type dcMessageData struct {
+	Text     string `json:"text,omitempty"`
+	File     string `json:"file,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
+// Ensure DeltaChatChannel satisfies the optional media-sending interface so the
+// Manager routes OutboundMediaMessage to it.
+var _ channels.MediaSender = (*DeltaChatChannel)(nil)
+
 // DeltaChatChannel implements channels.Channel on top of deltachat-rpc-server.
 type DeltaChatChannel struct {
 	*channels.BaseChannel
@@ -244,6 +258,65 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([
 		}
 	}
 	return nil, nil
+}
+
+// SendMedia implements channels.MediaSender. Each part is resolved to a local
+// file and delivered as its own Delta Chat message, with the part caption as the
+// message text. Delta Chat copies the file into its blob store and infers the
+// view type from the file itself.
+func (c *DeltaChatChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
+	if !c.IsRunning() {
+		return nil, channels.ErrNotRunning
+	}
+
+	chatID, err := strconv.ParseInt(strings.TrimSpace(msg.ChatID), 10, 64)
+	if err != nil || chatID <= 0 {
+		return nil, fmt.Errorf("deltachat: invalid chat id %q: %w", msg.ChatID, channels.ErrSendFailed)
+	}
+
+	store := c.GetMediaStore()
+	if store == nil {
+		return nil, fmt.Errorf("deltachat: no media store available: %w", channels.ErrSendFailed)
+	}
+
+	var messageIDs []string
+	for _, part := range msg.Parts {
+		localPath, err := store.Resolve(part.Ref)
+		if err != nil {
+			logger.ErrorCF("deltachat", "Failed to resolve media ref", map[string]any{
+				"ref":   part.Ref,
+				"error": err.Error(),
+			})
+			continue
+		}
+		// Delta Chat needs a path it can open from its own working directory;
+		// absolutize defensively in case the store ever yields a relative one.
+		if abs, absErr := filepath.Abs(localPath); absErr == nil {
+			localPath = abs
+		}
+
+		data := dcMessageData{
+			Text:     part.Caption,
+			File:     localPath,
+			Filename: part.Filename,
+		}
+		raw, err := c.rpc.call(ctx, "send_msg", c.accountID, chatID, data)
+		if err != nil {
+			logger.ErrorCF("deltachat", "Failed to send media", map[string]any{
+				"ref":   part.Ref,
+				"error": err.Error(),
+			})
+			return messageIDs, fmt.Errorf("deltachat send media: %w", channels.ErrTemporary)
+		}
+
+		// send_msg returns the new message id as a bare integer.
+		var messageID int64
+		if err := json.Unmarshal(raw, &messageID); err == nil && messageID > 0 {
+			messageIDs = append(messageIDs, strconv.FormatInt(messageID, 10))
+		}
+	}
+
+	return messageIDs, nil
 }
 
 // StartTyping implements channels.TypingCapable. Delta Chat has no typing

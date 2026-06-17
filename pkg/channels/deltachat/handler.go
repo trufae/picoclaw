@@ -3,14 +3,17 @@ package deltachat
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 )
 
 // listen is the inbound message loop. It blocks on wait_next_msgs and feeds
@@ -107,18 +110,36 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		senderName = "unknown"
 	}
 
+	chatID := strconv.FormatInt(msg.ChatID, 10)
+	messageIDStr := strconv.FormatInt(msg.ID, 10)
+
 	content := strings.TrimSpace(msg.Text)
+
+	// Register any attachment with the media store so the agent pipeline can
+	// view images and operate on files. The ref is scoped to the same key the
+	// BaseChannel derives for this message, so it is released with the turn.
+	var mediaRefs []string
 	if msg.File != "" {
-		// Surface the attachment path so downstream tooling can pick it up.
-		annotation := fmt.Sprintf("[attachment: %s]", msg.File)
-		if content == "" {
-			content = annotation
+		scope := channels.BuildMediaScope(c.Name(), chatID, messageIDStr)
+		if ref := c.registerInboundFile(scope, msg); ref != "" {
+			mediaRefs = append(mediaRefs, ref)
 		} else {
-			content = content + "\n" + annotation
+			// Fallback when no media store is available: surface the path inline
+			// so the attachment is not silently lost.
+			annotation := fmt.Sprintf("[attachment: %s]", msg.File)
+			if content == "" {
+				content = annotation
+			} else {
+				content = content + "\n" + annotation
+			}
 		}
 	}
 
-	chatID := strconv.FormatInt(msg.ChatID, 10)
+	// A file with no caption still warrants a turn; give the agent a minimal
+	// placeholder so the message survives the empty-content guard below.
+	if content == "" && len(mediaRefs) > 0 {
+		content = "[media]"
+	}
 
 	sender := bus.SenderInfo{
 		Platform:    config.ChannelDeltaChat,
@@ -176,7 +197,7 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		Channel:   config.ChannelDeltaChat,
 		ChatID:    chatID,
 		SenderID:  senderAddr,
-		MessageID: strconv.FormatInt(msg.ID, 10),
+		MessageID: messageIDStr,
 		Mentioned: isMentioned,
 		Raw:       metadata,
 	}
@@ -191,7 +212,37 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		"chat_type": inboundCtx.ChatType,
 		"from":      senderAddr,
 	})
-	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, sender)
+	c.HandleInboundContext(c.ctx, chatID, content, mediaRefs, inboundCtx, sender)
+}
+
+// registerInboundFile records an inbound attachment with the media store under
+// the given scope and returns its media:// ref. Delta Chat owns the underlying
+// blob file (it lives in the account's blob directory), so the store is told
+// never to delete it. Returns "" when there is no media store or registration
+// fails, letting the caller fall back to an inline path annotation.
+func (c *DeltaChatChannel) registerInboundFile(scope string, msg *dcMessage) string {
+	store := c.GetMediaStore()
+	if store == nil {
+		return ""
+	}
+	filename := msg.FileName
+	if filename == "" {
+		filename = filepath.Base(msg.File)
+	}
+	ref, err := store.Store(msg.File, media.MediaMeta{
+		Filename:      filename,
+		ContentType:   msg.FileMime,
+		Source:        config.ChannelDeltaChat,
+		CleanupPolicy: media.CleanupPolicyForgetOnly,
+	}, scope)
+	if err != nil {
+		logger.WarnCF("deltachat", "Failed to register attachment with media store", map[string]any{
+			"file":  msg.File,
+			"error": err.Error(),
+		})
+		return ""
+	}
+	return ref
 }
 
 func (c *DeltaChatChannel) getMessage(messageID int64) (*dcMessage, error) {

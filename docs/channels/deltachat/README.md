@@ -82,7 +82,13 @@ Delta Chat with that invite, not by typing the bare email address.
 - Messages from the bot itself, device chats, and info/system messages are
   ignored.
 - Accepted inbound messages are marked seen after the allow-list check.
-- Incoming file paths are appended as `[attachment: /path]`.
+- Incoming attachments (images, audio, video, documents) are registered with
+  the media store and handed to the agent, so it can view images or operate on
+  the files directly. If no media store is available, the path is appended
+  inline as `[attachment: /path]` instead.
+- Outbound attachments are supported: when the agent emits media, each file is
+  sent as a Delta Chat message (with the caption as text). Delta Chat infers the
+  view type from the file, so images, GIFs, and videos render natively.
 
 ## Troubleshooting
 
