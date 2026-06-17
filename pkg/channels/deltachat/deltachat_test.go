@@ -464,9 +464,19 @@ func TestDeltaChatViewtype(t *testing.T) {
 		meta media.MediaMeta
 		want string
 	}{
-		{"tts audio", bus.MediaPart{Type: "audio"}, media.MediaMeta{Source: "tool:send_tts", ContentType: "audio/ogg"}, "Voice"},
+		{
+			"tts audio",
+			bus.MediaPart{Type: "audio"},
+			media.MediaMeta{Source: "tool:send_tts", ContentType: "audio/ogg"},
+			"Voice",
+		},
 		{"voice filename", bus.MediaPart{Type: "audio", Filename: "my-voice.mp3"}, media.MediaMeta{}, "Voice"},
-		{"plain audio", bus.MediaPart{Type: "audio", Filename: "song.mp3"}, media.MediaMeta{ContentType: "audio/mpeg"}, ""},
+		{
+			"plain audio",
+			bus.MediaPart{Type: "audio", Filename: "song.mp3"},
+			media.MediaMeta{ContentType: "audio/mpeg"},
+			"",
+		},
 		{"image", bus.MediaPart{Type: "image", Filename: "photo.png"}, media.MediaMeta{ContentType: "image/png"}, ""},
 		{"file", bus.MediaPart{Type: "file", Filename: "doc.pdf"}, media.MediaMeta{}, ""},
 	}
