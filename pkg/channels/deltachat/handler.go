@@ -3,10 +3,14 @@ package deltachat
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -223,10 +227,16 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 }
 
 // registerInboundFile records an inbound attachment with the media store under
-// the given scope and returns its media:// ref. Delta Chat owns the underlying
-// blob file (it lives in the account's blob directory), so the store is told
-// never to delete it. Returns "" when there is no media store or registration
-// fails, letting the caller fall back to an inline path annotation.
+// the given scope and returns its media:// ref. Returns "" when there is no
+// media store or registration fails, letting the caller fall back to an inline
+// path annotation.
+//
+// Delta Chat stores attachments inside the account directory, next to the
+// credential database — a location tools are intentionally NOT allowed to read.
+// We therefore copy the single attachment out into the shared media temp dir
+// (which read_file/load_image are permitted to access) and register that copy,
+// so the agent can actually open the file. The copy is store-managed and deleted
+// when the turn's scope is released.
 func (c *DeltaChatChannel) registerInboundFile(scope string, msg *dcMessage) string {
 	store := c.GetMediaStore()
 	if store == nil {
@@ -236,20 +246,67 @@ func (c *DeltaChatChannel) registerInboundFile(scope string, msg *dcMessage) str
 	if filename == "" {
 		filename = filepath.Base(msg.File)
 	}
-	ref, err := store.Store(msg.File, media.MediaMeta{
-		Filename:      filename,
-		ContentType:   msg.FileMime,
-		Source:        config.ChannelDeltaChat,
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
-	}, scope)
+
+	localPath, err := copyToMediaTemp(msg.File, filename)
 	if err != nil {
-		logger.WarnCF("deltachat", "Failed to register attachment with media store", map[string]any{
+		logger.WarnCF("deltachat", "Failed to copy attachment into media dir", map[string]any{
 			"file":  msg.File,
 			"error": err.Error(),
 		})
 		return ""
 	}
+
+	ref, err := store.Store(localPath, media.MediaMeta{
+		Filename:      filename,
+		ContentType:   msg.FileMime,
+		Source:        config.ChannelDeltaChat,
+		CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+	}, scope)
+	if err != nil {
+		logger.WarnCF("deltachat", "Failed to register attachment with media store", map[string]any{
+			"file":  localPath,
+			"error": err.Error(),
+		})
+		_ = os.Remove(localPath)
+		return ""
+	}
 	return ref
+}
+
+// copyToMediaTemp copies srcPath into the shared media temp directory under a
+// unique name and returns the destination path. The media temp dir is the
+// location the read_file/load_image tools are permitted to read, so copying here
+// makes the attachment readable without exposing Delta Chat's account directory.
+func copyToMediaTemp(srcPath, filename string) (string, error) {
+	if err := os.MkdirAll(media.TempDir(), 0o700); err != nil {
+		return "", err
+	}
+	safe := utils.SanitizeFilename(filename)
+	if safe == "" {
+		safe = filepath.Base(srcPath)
+	}
+	dstPath := filepath.Join(media.TempDir(), uuid.NewString()[:8]+"_"+safe)
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		_ = os.Remove(dstPath)
+		return "", err
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(dstPath)
+		return "", err
+	}
+	return dstPath, nil
 }
 
 func (c *DeltaChatChannel) getMessage(messageID int64) (*dcMessage, error) {

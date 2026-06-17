@@ -281,9 +281,10 @@ func TestMessageDataJSON(t *testing.T) {
 	}
 }
 
-// TestRegisterInboundFile checks that an inbound attachment is registered with
-// the media store (with forget-only cleanup so Delta Chat's blob survives) and
-// that the absence of a store yields an empty ref for the annotation fallback.
+// TestRegisterInboundFile checks that an inbound attachment is copied out of
+// Delta Chat's account directory into the tool-readable media temp dir and
+// registered with delete-on-cleanup, and that the absence of a store yields an
+// empty ref for the annotation fallback.
 func TestRegisterInboundFile(t *testing.T) {
 	ch := newTestChannel(t)
 
@@ -307,14 +308,24 @@ func TestRegisterInboundFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if path != tmp {
-		t.Errorf("path = %q, want %q", path, tmp)
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	// The registered path must be a copy in the media temp dir (tool-readable),
+	// not the original blob path, and must have the same contents.
+	if path == tmp {
+		t.Errorf("path = %q, want a copy in the media temp dir, not the blob path", path)
+	}
+	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(media.TempDir())) {
+		t.Errorf("path = %q, want it under media temp dir %q", path, media.TempDir())
+	}
+	if data, rerr := os.ReadFile(path); rerr != nil || string(data) != "%PDF-1.4" {
+		t.Errorf("copied file contents = %q (err %v), want %q", string(data), rerr, "%PDF-1.4")
 	}
 	if meta.ContentType != "application/pdf" {
 		t.Errorf("content type = %q, want application/pdf", meta.ContentType)
 	}
-	if meta.CleanupPolicy != media.CleanupPolicyForgetOnly {
-		t.Errorf("cleanup policy = %q, want forget_only", meta.CleanupPolicy)
+	if meta.CleanupPolicy != media.CleanupPolicyDeleteOnCleanup {
+		t.Errorf("cleanup policy = %q, want delete_on_cleanup", meta.CleanupPolicy)
 	}
 }
 
