@@ -167,11 +167,6 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		return
 	}
 
-	// Mark seen only for messages we accept for processing: this sends a read
-	// receipt and prevents reprocessing. Doing it after the allow-list check
-	// avoids leaking the bot's activity (read receipts) to unauthorized senders.
-	_, _ = c.rpc.call(c.ctx, "markseen_msgs", c.accountID, []int64{messageID})
-
 	isMentioned := false
 	if isGroup {
 		botName := c.config.DisplayName
@@ -223,7 +218,21 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		"chat_type": inboundCtx.ChatType,
 		"from":      senderAddr,
 	})
-	c.HandleInboundContext(c.ctx, chatID, content, mediaRefs, inboundCtx, sender)
+	if err := c.HandleInboundContext(c.ctx, chatID, content, mediaRefs, inboundCtx, sender); err != nil {
+		logger.ErrorCF("deltachat", "Dispatch failed; leaving message unseen", map[string]any{
+			"message_id": messageID,
+			"chat_id":    chatID,
+			"error":      err.Error(),
+		})
+		return
+	}
+	if _, err := c.rpc.call(c.ctx, "markseen_msgs", c.accountID, []int64{messageID}); err != nil {
+		logger.WarnCF("deltachat", "Failed to mark message seen", map[string]any{
+			"message_id": messageID,
+			"chat_id":    chatID,
+			"error":      err.Error(),
+		})
+	}
 }
 
 // registerInboundFile records an inbound attachment with the media store under

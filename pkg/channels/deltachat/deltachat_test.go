@@ -127,6 +127,74 @@ func TestResolveDataDir(t *testing.T) {
 	}
 }
 
+func TestHandleMessageMarksSeenOnlyAfterDispatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		chatType    string
+		mentionOnly bool
+		closeBus    bool
+		wantSeen    bool
+	}{
+		{name: "successful dispatch", chatType: chatTypeSingle, wantSeen: true},
+		{name: "ignored group trigger", chatType: "Group", mentionOnly: true},
+		{name: "failed local publish", chatType: chatTypeSingle, closeBus: true},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messageID := int64(42 + i)
+			chat := dcChat{ID: 99, Name: "chat", ChatType: tt.chatType}
+			msgBus := bus.NewMessageBus()
+			if tt.closeBus {
+				msgBus.Close()
+			} else {
+				defer msgBus.Close()
+			}
+
+			ch := newTestChannelWithBus(t, msgBus, func(bc *config.Channel) {
+				bc.GroupTrigger.MentionOnly = tt.mentionOnly
+			})
+			ch.ctx = context.Background()
+			ch.accountID = 7
+			ch.selfAddr = "bot@example.org"
+
+			markSeen := make(chan struct{}, 1)
+			rpc, cleanup := newMockRPC(t, func(req rpcRequest) string {
+				switch req.Method {
+				case "get_message":
+					return rpcResult(req, dcMessage{
+						ID:     messageID,
+						ChatID: chat.ID,
+						Text:   "hello",
+						Sender: &dcContact{Address: "alice@example.org", DisplayName: "Alice"},
+					})
+				case "get_full_chat_by_id":
+					return rpcResult(req, chat)
+				case "markseen_msgs":
+					markSeen <- struct{}{}
+					return rpcResult(req, nil)
+				default:
+					return `{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"error":{"code":-32601,"message":"unexpected method"}}`
+				}
+			})
+			defer cleanup()
+			ch.rpc = rpc
+
+			ch.handleMessage(messageID)
+
+			gotSeen := false
+			select {
+			case <-markSeen:
+				gotSeen = true
+			default:
+			}
+			if gotSeen != tt.wantSeen {
+				t.Fatalf("markseen called = %v, want %v", gotSeen, tt.wantSeen)
+			}
+		})
+	}
+}
+
 func TestDeltaChatSettingsDecode(t *testing.T) {
 	raw := []byte(`{
 		"enabled": true,
@@ -219,19 +287,26 @@ func itoa(n uint64) string {
 // rpc-server binary) but without starting any IO, for unit-testing methods in
 // isolation.
 func newTestChannel(t *testing.T) *DeltaChatChannel {
+	return newTestChannelWithBus(t, bus.NewMessageBus(), nil)
+}
+
+func newTestChannelWithBus(t *testing.T, msgBus *bus.MessageBus, configure func(*config.Channel)) *DeltaChatChannel {
 	t.Helper()
 	fakeServer := filepath.Join(t.TempDir(), "deltachat-rpc-server")
 	if err := os.WriteFile(fakeServer, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	bc := &config.Channel{Type: config.ChannelDeltaChat, Enabled: true}
+	if configure != nil {
+		configure(bc)
+	}
 	cfg := &config.DeltaChatSettings{
 		Email:         "bot@example.org",
 		Password:      *config.NewSecureString("pw"),
 		RPCServerPath: fakeServer,
 		DataDir:       t.TempDir(),
 	}
-	ch, err := NewDeltaChatChannel(bc, cfg, bus.NewMessageBus())
+	ch, err := NewDeltaChatChannel(bc, cfg, msgBus)
 	if err != nil {
 		t.Fatalf("new channel: %v", err)
 	}
@@ -262,6 +337,11 @@ func newMockRPC(t *testing.T, handler func(req rpcRequest) string) (*rpcClient, 
 		}
 	}()
 	return c, func() { _ = reqW.Close(); _ = respW.Close() }
+}
+
+func rpcResult(req rpcRequest, result any) string {
+	raw, _ := json.Marshal(result)
+	return `{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":` + string(raw) + `}`
 }
 
 // TestMessageDataJSON pins the camelCase keys and omitempty behavior expected by
