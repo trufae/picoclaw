@@ -230,6 +230,198 @@ func TestDeltaChatSettingsDecode(t *testing.T) {
 	}
 }
 
+func TestEnsureAccountReconfiguresConfiguredAccountWhenSettingsChange(t *testing.T) {
+	ch := newTestChannel(t)
+	ch.config.DisplayName = "New Bot"
+	ch.config.IMAPServer = "imap.example.org"
+	ch.config.IMAPPort = 993
+	ch.config.SMTPServer = "smtp.example.org"
+	ch.config.SMTPPort = 587
+
+	configureCalls := 0
+	accountConfigCalls := 0
+	var capturedConfig map[string]any
+
+	rpc, cleanup := newMockRPC(t, func(req rpcRequest) string {
+		switch req.Method {
+		case "get_all_accounts":
+			return rpcResult(req, []dcAccount{{ID: 7, Kind: "Configured", Addr: "bot@example.org"}})
+		case "is_configured":
+			return rpcResult(req, true)
+		case "get_config":
+			key, _ := req.Params[1].(string)
+			current := map[string]*string{
+				"addr":        strPtr("bot@example.org"),
+				"mail_pw":     strPtr("old-pw"),
+				"displayname": strPtr("Old Bot"),
+			}
+			return rpcResult(req, current[key])
+		case "batch_set_config":
+			if cfg, ok := req.Params[1].(map[string]any); ok {
+				if _, ok := cfg["mail_pw"]; ok {
+					accountConfigCalls++
+					capturedConfig = cfg
+				}
+			}
+			return rpcResult(req, nil)
+		case "configure":
+			configureCalls++
+			return rpcResult(req, nil)
+		case "select_account", "start_io":
+			return rpcResult(req, nil)
+		default:
+			return rpcUnexpectedMethod(req)
+		}
+	})
+	defer cleanup()
+	ch.rpc = rpc
+
+	if err := ch.ensureAccount(context.Background()); err != nil {
+		t.Fatalf("ensureAccount: %v", err)
+	}
+	if configureCalls != 1 {
+		t.Fatalf("configure calls = %d, want 1", configureCalls)
+	}
+	if accountConfigCalls != 1 {
+		t.Fatalf("account batch_set_config calls = %d, want 1", accountConfigCalls)
+	}
+	if capturedConfig["mail_pw"] != "pw" {
+		t.Errorf("mail_pw = %v, want pw", capturedConfig["mail_pw"])
+	}
+	if capturedConfig["displayname"] != "New Bot" {
+		t.Errorf("displayname = %v, want New Bot", capturedConfig["displayname"])
+	}
+	if capturedConfig["mail_server"] != "imap.example.org" {
+		t.Errorf("mail_server = %v, want imap.example.org", capturedConfig["mail_server"])
+	}
+	if capturedConfig["mail_port"] != "993" {
+		t.Errorf("mail_port = %v, want 993", capturedConfig["mail_port"])
+	}
+	if capturedConfig["send_server"] != "smtp.example.org" {
+		t.Errorf("send_server = %v, want smtp.example.org", capturedConfig["send_server"])
+	}
+	if capturedConfig["send_port"] != "587" {
+		t.Errorf("send_port = %v, want 587", capturedConfig["send_port"])
+	}
+}
+
+func TestEnsureAccountSkipsConfiguredAccountWhenSettingsMatch(t *testing.T) {
+	ch := newTestChannel(t)
+	ch.config.DisplayName = "Pico Bot"
+	ch.config.IMAPServer = "imap.example.org"
+	ch.config.IMAPPort = 993
+	ch.config.SMTPServer = "smtp.example.org"
+	ch.config.SMTPPort = 587
+
+	configureCalls := 0
+	accountConfigCalls := 0
+
+	rpc, cleanup := newMockRPC(t, func(req rpcRequest) string {
+		switch req.Method {
+		case "get_all_accounts":
+			return rpcResult(req, []dcAccount{{ID: 7, Kind: "Configured", Addr: "bot@example.org"}})
+		case "is_configured":
+			return rpcResult(req, true)
+		case "get_config":
+			key, _ := req.Params[1].(string)
+			current := map[string]*string{
+				"addr":        strPtr("bot@example.org"),
+				"mail_pw":     strPtr("pw"),
+				"displayname": strPtr("Pico Bot"),
+				"mail_server": strPtr("imap.example.org"),
+				"mail_port":   strPtr("993"),
+				"send_server": strPtr("smtp.example.org"),
+				"send_port":   strPtr("587"),
+			}
+			return rpcResult(req, current[key])
+		case "batch_set_config":
+			if cfg, ok := req.Params[1].(map[string]any); ok {
+				if _, ok := cfg["mail_pw"]; ok {
+					accountConfigCalls++
+				}
+			}
+			return rpcResult(req, nil)
+		case "configure":
+			configureCalls++
+			return rpcResult(req, nil)
+		case "select_account", "start_io":
+			return rpcResult(req, nil)
+		default:
+			return rpcUnexpectedMethod(req)
+		}
+	})
+	defer cleanup()
+	ch.rpc = rpc
+
+	if err := ch.ensureAccount(context.Background()); err != nil {
+		t.Fatalf("ensureAccount: %v", err)
+	}
+	if configureCalls != 0 {
+		t.Fatalf("configure calls = %d, want 0", configureCalls)
+	}
+	if accountConfigCalls != 0 {
+		t.Fatalf("account batch_set_config calls = %d, want 0", accountConfigCalls)
+	}
+}
+
+func TestEnsureAccountClearsRemovedOptionalSettings(t *testing.T) {
+	ch := newTestChannel(t)
+
+	var capturedConfig map[string]any
+
+	rpc, cleanup := newMockRPC(t, func(req rpcRequest) string {
+		switch req.Method {
+		case "get_all_accounts":
+			return rpcResult(req, []dcAccount{{ID: 7, Kind: "Configured", Addr: "bot@example.org"}})
+		case "is_configured":
+			return rpcResult(req, true)
+		case "get_config":
+			key, _ := req.Params[1].(string)
+			current := map[string]*string{
+				"addr":        strPtr("bot@example.org"),
+				"mail_pw":     strPtr("pw"),
+				"displayname": strPtr("Old Bot"),
+				"mail_server": strPtr("imap.example.org"),
+				"mail_port":   strPtr("993"),
+				"send_server": strPtr("smtp.example.org"),
+				"send_port":   strPtr("587"),
+			}
+			return rpcResult(req, current[key])
+		case "batch_set_config":
+			if cfg, ok := req.Params[1].(map[string]any); ok {
+				if _, ok := cfg["mail_pw"]; ok {
+					capturedConfig = cfg
+				}
+			}
+			return rpcResult(req, nil)
+		case "configure", "select_account", "start_io":
+			return rpcResult(req, nil)
+		default:
+			return rpcUnexpectedMethod(req)
+		}
+	})
+	defer cleanup()
+	ch.rpc = rpc
+
+	if err := ch.ensureAccount(context.Background()); err != nil {
+		t.Fatalf("ensureAccount: %v", err)
+	}
+	if capturedConfig == nil {
+		t.Fatal("account batch_set_config was not called")
+	}
+	for _, key := range []string{"displayname", "mail_server", "mail_port", "send_server", "send_port"} {
+		if value, ok := capturedConfig[key]; !ok || value != nil {
+			t.Errorf("%s = %v (present %v), want explicit null", key, value, ok)
+		}
+	}
+	if capturedConfig["addr"] != "bot@example.org" {
+		t.Errorf("addr = %v, want bot@example.org", capturedConfig["addr"])
+	}
+	if capturedConfig["mail_pw"] != "pw" {
+		t.Errorf("mail_pw = %v, want pw", capturedConfig["mail_pw"])
+	}
+}
+
 // TestRPCClientRoundTrip drives the JSON-RPC client against an in-process mock
 // server over pipes, verifying id correlation and error propagation.
 func TestRPCClientRoundTrip(t *testing.T) {
@@ -342,6 +534,14 @@ func newMockRPC(t *testing.T, handler func(req rpcRequest) string) (*rpcClient, 
 func rpcResult(req rpcRequest, result any) string {
 	raw, _ := json.Marshal(result)
 	return `{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"result":` + string(raw) + `}`
+}
+
+func rpcUnexpectedMethod(req rpcRequest) string {
+	return `{"jsonrpc":"2.0","id":` + itoa(req.ID) + `,"error":{"code":-32601,"message":"unexpected method"}}`
+}
+
+func strPtr(value string) *string {
+	return &value
 }
 
 // TestMessageDataJSON pins the camelCase keys and omitempty behavior expected by

@@ -34,6 +34,16 @@ const chatTypeSingle = "Single"
 // configureTimeout bounds the (network-bound) account configuration step.
 const configureTimeout = 90 * time.Second
 
+var managedAccountConfigKeys = []string{
+	"addr",
+	"mail_pw",
+	"displayname",
+	"mail_server",
+	"mail_port",
+	"send_server",
+	"send_port",
+}
+
 // dcAccount is one entry from get_all_accounts.
 type dcAccount struct {
 	ID   int64  `json:"id"`
@@ -417,6 +427,20 @@ func (c *DeltaChatChannel) ensureAccount(ctx context.Context) error {
 		if err := c.configureAccount(ctx, accountID); err != nil {
 			return err
 		}
+	} else {
+		changed, err := c.accountConfigChanged(ctx, accountID)
+		if err != nil {
+			logger.WarnCF("deltachat", "Could not read account config; reconfiguring", map[string]any{
+				"email": c.config.Email,
+				"error": err.Error(),
+			})
+			changed = true
+		}
+		if changed {
+			if err := c.configureAccount(ctx, accountID); err != nil {
+				return err
+			}
+		}
 	}
 
 	if _, err := c.rpc.call(ctx, "select_account", accountID); err != nil {
@@ -434,12 +458,12 @@ func (c *DeltaChatChannel) ensureAccount(ctx context.Context) error {
 	return nil
 }
 
-// configureAccount writes the credentials and runs the (network-bound)
+// configureAccount writes the managed account settings and runs the (network-bound)
 // provider auto-configuration.
 func (c *DeltaChatChannel) configureAccount(ctx context.Context, accountID int64) error {
 	cfgMap := accountConfigMap(c.config)
 	if _, err := c.rpc.call(ctx, "batch_set_config", accountID, cfgMap); err != nil {
-		return fmt.Errorf("deltachat set credentials: %w", err)
+		return fmt.Errorf("deltachat set account config: %w", err)
 	}
 
 	logger.InfoCF("deltachat", "Configuring account (validating credentials)", map[string]any{
@@ -453,27 +477,67 @@ func (c *DeltaChatChannel) configureAccount(ctx context.Context, accountID int64
 	return nil
 }
 
-func accountConfigMap(cfg *config.DeltaChatSettings) map[string]string {
-	cfgMap := map[string]string{
-		"addr":    cfg.Email,
-		"mail_pw": cfg.Password.String(),
+func (c *DeltaChatChannel) accountConfigChanged(ctx context.Context, accountID int64) (bool, error) {
+	want := accountConfigMap(c.config)
+	for _, key := range managedAccountConfigKeys {
+		raw, err := c.rpc.call(ctx, "get_config", accountID, key)
+		if err != nil {
+			return false, fmt.Errorf("deltachat get config %s: %w", key, err)
+		}
+		var got *string
+		if err := json.Unmarshal(raw, &got); err != nil {
+			return false, fmt.Errorf("deltachat get config %s decode: %w", key, err)
+		}
+		if !accountConfigValueEqual(got, want[key]) {
+			logger.InfoCF("deltachat", "Account config changed; reconfiguring", map[string]any{
+				"email": c.config.Email,
+				"key":   key,
+			})
+			return true, nil
+		}
 	}
-	if cfg.DisplayName != "" {
-		cfgMap["displayname"] = cfg.DisplayName
+	return false, nil
+}
+
+func accountConfigValueEqual(got, want *string) bool {
+	if want == nil {
+		return got == nil || *got == ""
 	}
-	if cfg.IMAPServer != "" {
-		cfgMap["mail_server"] = cfg.IMAPServer
+	if got == nil {
+		return *want == ""
 	}
-	if cfg.IMAPPort > 0 {
-		cfgMap["mail_port"] = strconv.Itoa(cfg.IMAPPort)
-	}
-	if cfg.SMTPServer != "" {
-		cfgMap["send_server"] = cfg.SMTPServer
-	}
-	if cfg.SMTPPort > 0 {
-		cfgMap["send_port"] = strconv.Itoa(cfg.SMTPPort)
+	return *got == *want
+}
+
+func accountConfigMap(cfg *config.DeltaChatSettings) map[string]*string {
+	cfgMap := map[string]*string{
+		"addr":        accountConfigString(cfg.Email),
+		"mail_pw":     accountConfigString(cfg.Password.String()),
+		"displayname": accountConfigOptionalString(cfg.DisplayName),
+		"mail_server": accountConfigOptionalString(cfg.IMAPServer),
+		"mail_port":   accountConfigOptionalInt(cfg.IMAPPort),
+		"send_server": accountConfigOptionalString(cfg.SMTPServer),
+		"send_port":   accountConfigOptionalInt(cfg.SMTPPort),
 	}
 	return cfgMap
+}
+
+func accountConfigString(value string) *string {
+	return &value
+}
+
+func accountConfigOptionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return accountConfigString(value)
+}
+
+func accountConfigOptionalInt(value int) *string {
+	if value <= 0 {
+		return nil
+	}
+	return accountConfigString(strconv.Itoa(value))
 }
 
 func (c *DeltaChatChannel) listAccounts(ctx context.Context) ([]dcAccount, error) {
