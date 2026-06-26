@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/line/line-bot-sdk-go/v8/linebot/webhook"
+
 	"github.com/sipeed/picoclaw/pkg/config"
 )
 
@@ -81,5 +83,63 @@ func TestWebhookRejectsInvalidSignature(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+	}
+}
+
+func TestIsBotMentionedUsesTextMentionBoundaries(t *testing.T) {
+	ch := &LINEChannel{botDisplayName: "AI"}
+
+	tests := []struct {
+		name string
+		msg  webhook.TextMessageContent
+		want bool
+	}{
+		{
+			name: "fallback exact display name",
+			msg:  webhook.TextMessageContent{Text: "@AI help"},
+			want: true,
+		},
+		{
+			name: "fallback inside word",
+			msg:  webhook.TextMessageContent{Text: "please email me later"},
+			want: false,
+		},
+		{
+			name: "metadata mention exact display name",
+			msg: webhook.TextMessageContent{
+				Text: "@AI help",
+				Mention: &webhook.Mention{Mentionees: []webhook.MentioneeInterface{
+					&webhook.UserMentionee{Mentionee: webhook.Mentionee{Index: 0, Length: 3}},
+				}},
+			},
+			want: true,
+		},
+		{
+			name: "metadata mention inside word",
+			msg: webhook.TextMessageContent{
+				Text: "@MAIL help",
+				Mention: &webhook.Mention{Mentionees: []webhook.MentioneeInterface{
+					&webhook.UserMentionee{Mentionee: webhook.Mentionee{Index: 0, Length: 5}},
+				}},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ch.isBotMentioned(tt.msg); got != tt.want {
+				t.Fatalf("isBotMentioned() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripBotMentionUsesTextMentionBoundaries(t *testing.T) {
+	ch := &LINEChannel{botDisplayName: "Bot"}
+
+	got := ch.stripBotMention("@Botanic @Bot hello", webhook.TextMessageContent{Text: "@Botanic @Bot hello"})
+	if got != "@Botanic hello" {
+		t.Fatalf("stripBotMention() = %q, want %q", got, "@Botanic hello")
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
 
@@ -346,53 +345,13 @@ func (c *DeltaChatChannel) getFullChat(chatID int64) (*dcChat, error) {
 // mentionsBot reports whether the message references the bot by display name or
 // the local-part of its email address (a common addressing convention).
 func mentionsBot(content, displayName, email string) bool {
-	if containsMentionToken(content, displayName) {
+	if channels.ContainsTextMention(content, displayName) {
 		return true
 	}
 	if local, _, ok := strings.Cut(email, "@"); ok && local != "" {
-		if containsMentionToken(content, "@"+local) {
+		if channels.ContainsTextMention(content, "@"+local) {
 			return true
 		}
 	}
 	return false
-}
-
-func containsMentionToken(content, token string) bool {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return false
-	}
-	contentRunes := []rune(strings.ToLower(content))
-	tokenRunes := []rune(strings.ToLower(token))
-	if len(tokenRunes) == 0 || len(tokenRunes) > len(contentRunes) {
-		return false
-	}
-	for i := 0; i <= len(contentRunes)-len(tokenRunes); i++ {
-		if !sameRunes(contentRunes[i:i+len(tokenRunes)], tokenRunes) {
-			continue
-		}
-		before := i == 0 || !isMentionWordRune(contentRunes[i-1])
-		afterIdx := i + len(tokenRunes)
-		after := afterIdx >= len(contentRunes) || !isMentionWordRune(contentRunes[afterIdx])
-		if before && after {
-			return true
-		}
-	}
-	return false
-}
-
-func sameRunes(a, b []rune) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func isMentionWordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }

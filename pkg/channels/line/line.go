@@ -364,7 +364,7 @@ func (c *LINEChannel) isBotMentioned(msg webhook.TextMessageContent) bool {
 					end := int(mentionee.Index) + int(mentionee.Length)
 					if end <= len(runes) {
 						mentionText := string(runes[mentionee.Index:end])
-						if strings.Contains(mentionText, c.botDisplayName) {
+						if channels.ContainsTextMention(mentionText, c.botDisplayName) {
 							return true
 						}
 					}
@@ -374,7 +374,7 @@ func (c *LINEChannel) isBotMentioned(msg webhook.TextMessageContent) bool {
 	}
 
 	// Fallback: text-based detection with display name
-	if c.botDisplayName != "" && strings.Contains(msg.Text, "@"+c.botDisplayName) {
+	if channels.ContainsTextMention(msg.Text, "@"+c.botDisplayName) {
 		return true
 	}
 
@@ -404,7 +404,7 @@ func (c *LINEChannel) stripBotMention(text string, msg webhook.TextMessageConten
 					end := int(index) + int(length)
 					if end <= len(runes) {
 						mentionText := string(runes[index:end])
-						if strings.Contains(mentionText, c.botDisplayName) {
+						if channels.ContainsTextMention(mentionText, c.botDisplayName) {
 							shouldStrip = true
 						}
 					}
@@ -432,7 +432,7 @@ func (c *LINEChannel) stripBotMention(text string, msg webhook.TextMessageConten
 
 	// Fallback: strip @DisplayName from text
 	if c.botDisplayName != "" {
-		text = strings.ReplaceAll(text, "@"+c.botDisplayName, "")
+		text = channels.StripTextMention(text, "@"+c.botDisplayName)
 	}
 
 	return strings.TrimSpace(text)

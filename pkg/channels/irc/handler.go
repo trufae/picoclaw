@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/ergochat/irc-go/ircevent"
 	"github.com/ergochat/irc-go/ircmsg"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
@@ -127,21 +127,7 @@ func nickMentionedAt(content, botNick string) int {
 	if strings.HasPrefix(lower, lowerNick+":") || strings.HasPrefix(lower, lowerNick+",") {
 		return 0
 	}
-
-	// Word-boundary match anywhere in the message
-	idx := strings.Index(lower, lowerNick)
-	if idx < 0 {
-		return -1
-	}
-	runes := []rune(lower)
-	nickRunes := []rune(lowerNick)
-	endIdx := idx + len(string(nickRunes))
-	before := idx == 0 || !unicode.IsLetter(runes[idx-1]) && !unicode.IsDigit(runes[idx-1])
-	after := endIdx >= len(lower) || !unicode.IsLetter(rune(lower[endIdx])) && !unicode.IsDigit(rune(lower[endIdx]))
-	if before && after {
-		return idx
-	}
-	return -1
+	return channels.TextMentionIndex(content, botNick)
 }
 
 // isBotMentioned checks if the bot's nick appears in the message.

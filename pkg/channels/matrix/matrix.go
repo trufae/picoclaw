@@ -1243,24 +1243,22 @@ func (c *MatrixChannel) isBotMentioned(msgEvt *event.MessageEventContent) bool {
 	}
 
 	userID := c.client.UserID.String()
-	if userID != "" && strings.Contains(msgEvt.Body, userID) {
+	if userID != "" && channels.ContainsTextMention(msgEvt.Body, userID) {
 		return true
 	}
 	if mentionsUserInFormattedBody(msgEvt.FormattedBody, c.client.UserID) {
 		return true
 	}
 
-	mentionR := c.localpartMentionR
-	if mentionR == nil {
-		mentionR = localpartMentionRegexp(matrixLocalpart(c.client.UserID))
-	}
-	if mentionR == nil {
+	localpart := matrixLocalpart(c.client.UserID)
+	if localpart == "" {
 		return false
 	}
 
 	// Matrix users are addressed as MXID "@localpart:server", but many clients
 	// emit plain-text mentions as "@localpart". Both forms are handled here.
-	return mentionR.MatchString(msgEvt.Body) || mentionR.MatchString(msgEvt.FormattedBody)
+	return channels.ContainsTextMention(msgEvt.Body, "@"+localpart) ||
+		channels.ContainsTextMention(msgEvt.FormattedBody, "@"+localpart)
 }
 
 func mentionsUserInFormattedBody(formattedBody string, userID id.UserID) bool {
@@ -1274,7 +1272,7 @@ func mentionsUserInFormattedBody(formattedBody string, userID id.UserID) bool {
 		return false
 	}
 
-	if strings.Contains(strings.ToLower(formattedBody), target) {
+	if channels.ContainsTextMention(formattedBody, target) {
 		return true
 	}
 
@@ -1296,7 +1294,7 @@ func mentionsUserInFormattedBody(formattedBody string, userID id.UserID) bool {
 		if strings.Contains(strings.ToLower(u.Path), target) || strings.Contains(strings.ToLower(u.Fragment), target) {
 			return true
 		}
-		if strings.Contains(strings.ToLower(decodeMatrixMentionHref(u.Fragment)), target) {
+		if channels.ContainsTextMention(decodeMatrixMentionHref(u.Fragment), target) {
 			return true
 		}
 	}

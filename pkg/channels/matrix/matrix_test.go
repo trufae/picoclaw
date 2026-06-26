@@ -133,6 +133,20 @@ func TestIsBotMentioned(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "full user id inside word should not match",
+			msg: event.MessageEventContent{
+				Body: "x@picoclaw:matrix.org hello",
+			},
+			want: false,
+		},
+		{
+			name: "localpart inside email should not match",
+			msg: event.MessageEventContent{
+				Body: "mail test@picoclaw.example",
+			},
+			want: false,
+		},
+		{
 			name: "formatted mention href matrix.to plain",
 			msg: event.MessageEventContent{
 				Body:          "hello bot",
