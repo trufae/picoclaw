@@ -84,9 +84,17 @@ func TestMentionsBot(t *testing.T) {
 	}{
 		{"display name", "hey PicoBot can you help", "PicoBot", "bot@example.org", true},
 		{"case insensitive name", "hey picobot", "PicoBot", "bot@example.org", true},
+		{"short display name exact", "hey bot can you help", "bot", "bot@example.org", true},
+		{"short display name with punctuation", "AI, summarize this", "ai", "bot@example.org", true},
+		{"multi word display name", "hey PicoClaw Bot, can you help", "PicoClaw Bot", "bot@example.org", true},
 		{"email local part", "@bot please summarize", "", "bot@example.org", true},
+		{"email local part with punctuation", "please summarize, @bot.", "", "bot@example.org", true},
 		{"no mention", "just chatting here", "PicoBot", "bot@example.org", false},
 		{"local part without @", "the robot is cool", "", "bot@example.org", false},
+		{"short display name inside word", "the robot is cool", "bot", "bot@example.org", false},
+		{"short display name inside mail", "please email me later", "ai", "bot@example.org", false},
+		{"display name with prefix word", "hey SuperPicoClaw Bot", "PicoClaw Bot", "bot@example.org", false},
+		{"email local part inside handle", "hello @botanic", "", "bot@example.org", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
