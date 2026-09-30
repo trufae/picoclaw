@@ -631,6 +631,12 @@ func (c *DeltaChatChannel) resolveAliasChatID(ctx context.Context, target string
 		if err != nil {
 			return 0, err
 		}
+		if len(contacts) > 1 {
+			return 0, fmt.Errorf(
+				"ambiguous recipient %q: %w",
+				target, channels.ErrSendFailed,
+			)
+		}
 		if len(contacts) == 1 {
 			return c.chatIDForContact(ctx, contacts[0].ID)
 		}
@@ -643,7 +649,7 @@ func (c *DeltaChatChannel) resolveAliasChatID(ctx context.Context, target string
 			return chats[0].ID, nil
 		}
 
-		if len(contacts) > 1 || len(chats) > 1 {
+		if len(chats) > 1 {
 			return 0, fmt.Errorf(
 				"ambiguous recipient %q: %w",
 				target, channels.ErrSendFailed,
